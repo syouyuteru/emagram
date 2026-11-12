@@ -1,0 +1,490 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MSMエマグラム</title>
+<style>
+:root{--bg:#f4f6f9;--panel:#ffffff;--text:#1d2330;--muted:#5d6675;--line:#d9dde4;--accent:#1f6feb;--accent-text:#fff;--warn:#b42318;--chip:#eef1f5}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#13161b;--panel:#1c2027;--text:#e6e9ef;--muted:#9aa3b2;--line:#323843;--accent:#4c8dff;--accent-text:#fff;--warn:#ff8a7d;--chip:#262b34}}
+:root[data-theme="dark"]{--bg:#13161b;--panel:#1c2027;--text:#e6e9ef;--muted:#9aa3b2;--line:#323843;--accent:#4c8dff;--accent-text:#fff;--warn:#ff8a7d;--chip:#262b34}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:"Hiragino Sans","Yu Gothic UI","Meiryo",system-ui,sans-serif;font-size:14px;line-height:1.5}
+header{padding:14px 16px 4px;max-width:1240px;margin:0 auto}
+h1{font-size:18px;margin:0}
+header p{margin:2px 0 0;color:var(--muted);font-size:12px}
+main{max-width:1240px;margin:0 auto;padding:8px 16px 32px;display:flex;flex-direction:column;gap:12px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px}
+.row{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:end}
+label{display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--muted)}
+select,input,button{font:inherit;color:var(--text);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:6px 8px}
+input[type=number]{width:110px}
+input[type=text]{width:140px}
+button{cursor:pointer}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-text)}
+button:disabled{opacity:.5;cursor:default}
+#siteForm{display:none;margin-top:10px;padding-top:10px;border-top:1px dashed var(--line)}
+#siteForm.open{display:block}
+.slider{display:flex;align-items:center;gap:8px;flex:1;min-width:260px}
+.slider input[type=range]{flex:1;padding:0}
+#timeLabel{font-weight:600;min-width:190px}
+#strip{display:flex;height:16px;margin-top:8px;border-radius:4px;overflow:hidden;border:1px solid var(--line)}
+#strip div{flex:1;cursor:pointer;min-width:2px}
+#strip div.cur{outline:2px solid var(--text);outline-offset:-2px}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-top:6px}
+.legend span::before{content:"";display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px;background:var(--c)}
+#status{font-size:12px;color:var(--muted);min-height:18px}
+#status.err{color:var(--warn)}
+.canvasWrap{overflow:hidden}
+canvas{width:100%;height:auto;display:block;border-radius:6px;background:#fff}
+.note{font-size:12px;color:var(--muted);margin:6px 0 0}
+</style>
+</head>
+<body>
+<header>
+  <h1>MSMエマグラム</h1>
+  <p>気象庁メソモデル(MSM)の予報を Open-Meteo API から取得して描画します。地点の標高より下の気圧面を除いて地上点を加え、逆転層を判定します。</p>
+</header>
+<main>
+  <section class="panel">
+    <div class="row">
+      <label>地点<select id="site"></select></label>
+      <button id="editSite">地点を追加・編集</button>
+      <label>上端気圧<select id="pTop">
+        <option value="100">100 hPa</option><option value="200">200 hPa</option><option value="300" selected>300 hPa</option>
+        <option value="500">500 hPa</option><option value="700">700 hPa</option></select></label>
+      <label>地上点の作り方<select id="sfcMode">
+        <option value="2m">MSM地上値(2m気温・地上気圧)</option>
+        <option value="interp">気圧面から標高で内挿</option></select></label>
+      <button id="reload">再取得</button>
+      <button id="save" class="primary" disabled>画像を保存 (PNG)</button>
+    </div>
+    <div id="siteForm">
+      <div class="row">
+        <label>地点名<input type="text" id="fName"></label>
+        <label>緯度<input type="number" id="fLat" step="0.0001"></label>
+        <label>経度<input type="number" id="fLon" step="0.0001"></label>
+        <label>標高 (m)<input type="number" id="fElev" step="1"></label>
+        <button id="fGetElev">標高を自動取得</button>
+        <button id="fSave" class="primary">保存</button>
+        <button id="fDelete">この地点を削除</button>
+      </div>
+      <p class="note">同じ地点名で保存すると上書きされます。登録した地点はこのブラウザに保存されます。MSMの範囲は北緯22.4〜47.6°、東経120〜150°です。</p>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="row">
+      <div class="slider">
+        <button id="prev" aria-label="前の時刻">◀</button>
+        <input type="range" id="time" min="0" max="0" value="0">
+        <button id="next" aria-label="次の時刻">▶</button>
+      </div>
+      <div id="timeLabel">—</div>
+    </div>
+    <div id="strip" title="各時刻の逆転層"></div>
+    <div class="legend">
+      <span style="--c:#d6453d">接地逆転あり</span>
+      <span style="--c:#f0a92e">上空逆転あり(300hPaより下)</span>
+      <span style="--c:#c9ced6">逆転層なし</span>
+    </div>
+    <div id="status"></div>
+  </section>
+
+  <section class="panel canvasWrap">
+    <canvas id="cv"></canvas>
+    <p class="note">MSMの気圧面は 1000〜900hPa で25hPa間隔、それより上は50〜100hPa間隔のため、薄い逆転層は捉えられないことがあります。湿度は300hPaまでしか提供されないため、それより上は露点を描きません。<br>
+    「MSM地上値」は Open-Meteo が地点標高に合わせて補正した2m気温・地上気圧を使います。気象データ: 気象庁 MSM / <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo.com</a> (CC BY 4.0)</p>
+  </section>
+</main>
+
+<script>
+"use strict";
+// ===== 定数・熱力学 =====
+const LEVELS=[1000,975,950,925,900,850,800,700,600,500,400,300,250,200,150,100];
+const RD=287.04, CP=1005.7, LV=2.501e6, EPS=0.622, KAPPA=RD/CP;
+const W=1180, H=860; // 画像の論理サイズ
+const es=tc=>6.112*Math.exp(17.67*tc/(tc+243.5));
+const mixr=(tc,p)=>{const e=es(tc);return EPS*e/Math.max(p-e,1e-3);};
+const tdFromRH=(tc,rh)=>{if(rh==null||tc==null)return null;const g=Math.log(Math.max(rh,1)/100)+17.67*tc/(tc+243.5);return 243.5*g/(17.67-g);};
+const tdFromE=e=>{const g=Math.log(e/6.112);return 243.5*g/(17.67-g);};
+function moistDTdp(TK,p){const rs=mixr(TK-273.15,p);return (RD*TK+LV*rs)/(CP+LV*LV*rs*EPS/(RD*TK*TK))/p;}
+function moistLift(TK,p0,p1){
+  const n=Math.max(1,Math.ceil(Math.abs(p1-p0)/4)),h=(p1-p0)/n;let T=TK,p=p0;
+  for(let i=0;i<n;i++){const k1=moistDTdp(T,p),k2=moistDTdp(T+h*k1/2,p+h/2),k3=moistDTdp(T+h*k2/2,p+h/2),k4=moistDTdp(T+h*k3,p+h);T+=h*(k1+2*k2+2*k3+k4)/6;p+=h;}
+  return T;
+}
+function lcl(p0,tc,tdc){const T=tc+273.15,Td=Math.min(tdc,tc)+273.15;const Tl=1/(1/(Td-56)+Math.log(T/Td)/800)+56;return{T:Tl,p:p0*Math.pow(Tl/T,1/KAPPA)};}
+function interpP(pts,p,key){
+  for(let k=0;k<pts.length-1;k++){const a=pts[k],b=pts[k+1];
+    if(p<=a.p&&p>=b.p){const va=a[key],vb=b[key];if(va==null||vb==null)return null;const f=Math.log(a.p/p)/Math.log(a.p/b.p);return va+f*(vb-va);}}
+  return null;
+}
+
+// ===== 地点管理 =====
+const DEFAULT_SITES=[
+  // 標高は Open-Meteo の地形データ(約90m解像度)から取得した値。実測値があれば書き換えてください。
+  {name:"庄原",lat:34.85,lon:133.01,elev:259},
+  {name:"東近江",lat:35.06,lon:136.12,elev:105},
+  {name:"三次",lat:34.81,lon:132.85,elev:149},
+  {name:"世羅",lat:34.60,lon:132.98,elev:450},
+  {name:"安芸高田",lat:34.67,lon:132.72,elev:224},
+  {name:"上士幌",lat:43.20,lon:143.27,elev:244},
+  {name:"佐久",lat:36.25,lon:138.49,elev:694}
+];
+const store={get(k,d){try{const v=localStorage.getItem(k);return v?JSON.parse(v):d;}catch(e){return d;}},set(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}}};
+const SITES_KEY="emagram_sites_v2"; // 初期リストを変えたらキーを変えると、ブラウザ保存分がリセットされる
+let sites=store.get(SITES_KEY,null)||DEFAULT_SITES.slice();
+const $=id=>document.getElementById(id);
+
+function renderSiteOptions(sel){
+  const s=$("site");s.innerHTML="";
+  sites.forEach((o,i)=>{const op=document.createElement("option");op.value=i;op.textContent=`${o.name}（${o.elev}m）`;s.appendChild(op);});
+  s.value=Math.min(Math.max(sel??0,0),sites.length-1);
+}
+function fillForm(){const o=sites[+$("site").value];if(!o)return;$("fName").value=o.name;$("fLat").value=o.lat;$("fLon").value=o.lon;$("fElev").value=o.elev;}
+
+// ===== 状態 =====
+const S={data:null,meta:null,valid:[],profiles:[],axes:null,idx:0};
+const cache=new Map();
+
+function setStatus(msg,err){const el=$("status");el.textContent=msg||"";el.className=err?"err":"";}
+
+async function fetchMeta(){
+  try{const r=await fetch("https://api.open-meteo.com/data/jma_msm/static/meta.json");if(r.ok)S.meta=await r.json();}catch(e){S.meta=null;}
+}
+
+async function loadSite(force){
+  const site=sites[+$("site").value];if(!site)return;
+  const key=`${site.lat},${site.lon},${site.elev}`;
+  $("save").disabled=true;
+  if(!force&&cache.has(key)){S.data=cache.get(key);afterLoad();return;}
+  const vars=["temperature_2m","dew_point_2m","surface_pressure"];
+  for(const L of LEVELS)vars.push(`temperature_${L}hPa`,`relative_humidity_${L}hPa`,`geopotential_height_${L}hPa`);
+  const url=`https://api.open-meteo.com/v1/jma?latitude=${site.lat}&longitude=${site.lon}&elevation=${site.elev}&models=jma_msm&timezone=Asia%2FTokyo&forecast_days=4&hourly=${vars.join(",")}`;
+  setStatus("MSMデータを取得中…");
+  try{
+    const [r]=await Promise.all([fetch(url),S.meta?null:fetchMeta()]);
+    if(!r.ok)throw new Error(`HTTP ${r.status}`);
+    const j=await r.json();
+    if(j.error)throw new Error(j.reason||"APIエラー");
+    cache.set(key,j);S.data=j;afterLoad(true);
+  }catch(e){setStatus(`データ取得に失敗しました: ${e.message}`,true);}
+}
+
+function afterLoad(fresh){
+  const site=sites[+$("site").value],Hh=S.data.hourly,mode=$("sfcMode").value;
+  S.valid=[];S.profiles=[];
+  Hh.time.forEach((t,i)=>{const pr=buildProfile(Hh,i,site.elev,mode);if(pr){S.valid.push(i);pr.inv=findInversions(pr.pts);S.profiles.push(pr);}});
+  if(!S.profiles.length){setStatus("この地点・期間の有効なデータがありません（MSMの範囲外の可能性があります）",true);return;}
+  computeAxes();
+  const r=$("time");r.max=S.profiles.length-1;
+  if(fresh||S.idx>S.profiles.length-1){ // 現在時刻に最も近い時刻
+    const now=Date.now();let best=0,bd=Infinity;
+    S.valid.forEach((i,k)=>{const d=Math.abs(jstToMs(Hh.time[i])-now);if(d<bd){bd=d;best=k;}});S.idx=best;
+  }
+  r.value=S.idx;buildStrip();draw();
+  setStatus(`${S.profiles.length}時刻分のデータを読み込みました${S.meta?`（初期値 ${fmtInit()}）`:""}`);
+  $("save").disabled=false;
+}
+
+// ===== プロファイル作成（標高補正） =====
+function buildProfile(Hh,i,elev,mode){
+  const lv=[];
+  for(const L of LEVELS){const T=Hh[`temperature_${L}hPa`][i],z=Hh[`geopotential_height_${L}hPa`][i],rh=Hh[`relative_humidity_${L}hPa`][i];
+    if(T==null||z==null)continue;lv.push({p:L,z,T,Td:tdFromRH(T,rh)});}
+  if(lv.length<4)return null;
+  let a=null,b=null;
+  for(let k=0;k<lv.length-1;k++){if(lv[k].z<=elev&&lv[k+1].z>elev){a=lv[k];b=lv[k+1];break;}}
+  if(!a){if(elev<lv[0].z){a=lv[0];b=lv[1];}else return null;}
+  const f=(elev-a.z)/(b.z-a.z);
+  const pI=Math.exp(Math.log(a.p)+f*Math.log(b.p/a.p)),TI=a.T+f*(b.T-a.T);
+  const TdI=(a.Td!=null&&b.Td!=null)?a.Td+f*(b.Td-a.Td):null;
+  let sfc={p:pI,z:elev,T:TI,Td:TdI,src:"気圧面から内挿"};
+  if(mode==="2m"){const ps=Hh.surface_pressure[i],t2=Hh.temperature_2m[i],td2=Hh.dew_point_2m[i];
+    if(t2!=null)sfc={p:ps??pI,z:elev,T:t2,Td:td2??TdI,src:"MSM地上値"};}
+  if(sfc.Td!=null)sfc.Td=Math.min(sfc.Td,sfc.T);
+  sfc.isSfc=true;
+  const above=lv.filter(o=>o.z>elev+1&&o.p<sfc.p-0.5);
+  return{sfc,pts:[sfc,...above]};
+}
+
+// ===== 逆転層判定 =====
+function findInversions(pts){
+  const res=[];let cur=null;
+  for(let k=0;k<pts.length-1;k++){const a=pts[k],b=pts[k+1];
+    if(b.T-a.T>0.05){if(!cur)cur={base:a,top:b};else cur.top=b;}
+    else if(cur){res.push(cur);cur=null;}}
+  if(cur)res.push(cur);
+  for(const v of res){
+    v.dT=v.top.T-v.base.T;v.surface=!!v.base.isSfc;
+    v.type=v.surface?"接地逆転":(v.top.p<=300?"圏界面付近":"上空逆転");
+    v.hint="";
+    if(v.base.Td!=null&&v.top.Td!=null){const d=(v.top.T-v.top.Td)-(v.base.T-v.base.Td);
+      if(v.surface)v.hint="放射冷却型の可能性";
+      else if(d>=3)v.hint="上側が乾燥→沈降性の可能性";
+      else if(d<=-3)v.hint="上側が湿潤→前線性の可能性";}
+    else if(v.surface)v.hint="放射冷却型の可能性";
+    // ブレイク温度: 逆転層上端の温位を地上気圧まで乾燥断熱で下ろした気温。
+    // 地上気温がこれを上回ると、地表からの対流(混合層)が逆転層上端を突き抜けて逆転層が解消する。
+    v.theta=(v.top.T+273.15)*Math.pow(1000/v.top.p,KAPPA);
+    v.breakT=v.top.p>300?v.theta*Math.pow(pts[0].p/1000,KAPPA)-273.15:null;
+  }
+  return res;
+}
+function invCategory(pr){
+  if(pr.inv.some(v=>v.surface))return "sfc";
+  if(pr.inv.some(v=>v.base.p>300))return "elev";
+  return "none";
+}
+
+// ===== 指数計算 =====
+function analyze(pr){
+  const {sfc,pts}=pr,out={};
+  const zAt=p=>{const z=interpP(pts,p,"z");return z==null?null:z-sfc.z;};
+  // 0℃高度
+  if(sfc.T<=0)out.frz="地上で0℃以下";
+  else for(let k=0;k<pts.length-1;k++){const a=pts[k],b=pts[k+1];if(a.T>0&&b.T<=0){const f=a.T/(a.T-b.T);out.frz=`${Math.round(a.z+f*(b.z-a.z))} m（${Math.round(a.p+f*(b.p-a.p))} hPa）`;break;}}
+  // SSI・KI
+  const lvl=p=>pts.find(o=>!o.isSfc&&o.p===p);
+  const l850=lvl(850),l700=lvl(700),l500=lvl(500);
+  if(l850&&l500&&l850.Td!=null){const L=lcl(850,l850.T,l850.Td);const Tp=L.p>500?moistLift(L.T,L.p,500):(l850.T+273.15)*Math.pow(500/850,KAPPA);out.ssi=l500.T-(Tp-273.15);}
+  if(l850&&l700&&l500&&l850.Td!=null&&l700.Td!=null)out.ki=l850.T-l500.T+l850.Td-(l700.T-l700.Td);
+  if(sfc.Td==null)return out;
+  // 地上パーセル
+  const L=lcl(sfc.p,sfc.T,sfc.Td);out.lcl={p:L.p,T:L.T-273.15,z:zAt(L.p)};
+  const w0=mixr(sfc.Td,sfc.p),T0K=sfc.T+273.15,ptop=pts[pts.length-1].p;
+  const grid=[];let Tm=null,pm=null;
+  const ps=[];for(let p=sfc.p;p>ptop;p-=2)ps.push(p);ps.push(ptop);
+  for(const p of ps){let TK,w;
+    if(p>=L.p){TK=T0K*Math.pow(p/sfc.p,KAPPA);w=w0;}
+    else{if(Tm==null){Tm=L.T;pm=L.p;}Tm=moistLift(Tm,pm,p);pm=p;TK=Tm;w=mixr(TK-273.15,p);}
+    const Te=interpP(pts,p,"T");if(Te==null)continue;const Tde=interpP(pts,p,"Td");
+    const we=Tde!=null?mixr(Tde,p):0;
+    grid.push({p,Tp:TK-273.15,Te,d:TK*(1+0.61*w)-(Te+273.15)*(1+0.61*we)});}
+  out.grid=grid;
+  let iL=-1;for(let k=0;k<grid.length;k++){if(grid[k].p>L.p)continue;if(grid[k].d>0){iL=k;break;}}
+  if(iL>=0){
+    let iE=grid.length-1;for(let k=grid.length-1;k>=iL;k--){if(grid[k].d>0){iE=k;break;}}
+    let cape=0,cin=0;
+    for(let k=0;k<grid.length-1;k++){const a=grid[k],b=grid[k+1],m=(a.d+b.d)/2*RD*Math.log(a.p/b.p);
+      if(k>=iL&&k<iE&&m>0)cape+=m;if(k<iL&&m<0)cin+=m;}
+    out.lfc={p:grid[iL].p,z:zAt(grid[iL].p)};out.el={p:grid[iE].p,z:zAt(grid[iE].p)};out.cape=cape;out.cin=cin;out.iL=iL;out.iE=iE;
+  }else{out.cape=0;}
+  return out;
+}
+
+// ===== 軸 =====
+function computeAxes(){
+  let pTop=+$("pTop").value;
+  // 高所の地点で上端が地表より下になる場合は上端を自動で引き上げる
+  const minPs=Math.min(...S.profiles.map(pr=>pr.sfc.p));
+  if(pTop>minPs-120)pTop=Math.max(100,Math.floor((minPs-120)/50)*50);
+  let maxPs=0,tmin=Infinity,tmax=-Infinity,tdmin=Infinity;
+  for(const pr of S.profiles){maxPs=Math.max(maxPs,pr.sfc.p);
+    for(const o of pr.pts){if(o.p<pTop)continue;tmin=Math.min(tmin,o.T);tmax=Math.max(tmax,o.T);if(o.Td!=null&&o.p>=Math.max(pTop,500))tdmin=Math.min(tdmin,o.Td);}}
+  // 非常に乾燥した上層の露点で横軸が広がりすぎないよう、露点は下層(500hPa以下)のみ・気温-20℃までで考慮
+  tmin=Math.min(tmin,Math.max(tdmin,tmin-8));
+  if(!isFinite(tmin)||!isFinite(tmax)){tmin=-40;tmax=30;}
+  let pBot=Math.min(1050,Math.ceil((maxPs+15)/10)*10);if(pBot<pTop+80)pBot=pTop+80;
+  let tMin=Math.floor((tmin-4)/10)*10,tMax=Math.ceil((tmax+6)/10)*10;
+  if(tMax-tMin<30)tMax=tMin+30;
+  S.axes={pTop,pBot,tMin,tMax};
+}
+
+// ===== 時刻表示 =====
+const WD="日月火水木金土";
+function jstToMs(s){const[d,t]=s.split("T"),[y,m,dd]=d.split("-").map(Number),hh=+t.slice(0,2);return Date.UTC(y,m-1,dd,hh-9);}
+function fmtTime(s){const[d,t]=s.split("T"),[y,m,dd]=d.split("-").map(Number);const w=WD[new Date(Date.UTC(y,m-1,dd)).getUTCDay()];return `${y}/${m}/${dd}(${w}) ${t.slice(0,2)}時 JST`;}
+function fmtInit(){if(!S.meta)return "";const d=new Date(S.meta.last_run_initialisation_time*1000);return `${d.getUTCFullYear()}/${d.getUTCMonth()+1}/${d.getUTCDate()} ${String(d.getUTCHours()).padStart(2,"0")}UTC`;}
+function ftText(s){if(!S.meta)return "";const ft=Math.round((jstToMs(s)/1000-S.meta.last_run_initialisation_time)/3600);return ft>=0?`FT=${ft}`:`初期値より${-ft}時間前`;}
+
+function buildStrip(){
+  const st=$("strip");st.innerHTML="";const col={sfc:"#d6453d",elev:"#f0a92e",none:"#c9ced6"};
+  S.profiles.forEach((pr,k)=>{const d=document.createElement("div");const c=invCategory(pr);d.style.background=col[c];
+    d.title=`${fmtTime(S.data.hourly.time[S.valid[k]])}  ${c==="sfc"?"接地逆転":c==="elev"?"上空逆転":"逆転なし"}`;
+    d.onclick=()=>{S.idx=k;$("time").value=k;draw();};st.appendChild(d);});
+}
+
+// ===== 描画 =====
+function draw(){
+  if(!S.profiles.length)return;
+  const cv=$("cv"),dpr=Math.min(window.devicePixelRatio||1,2);
+  cv.width=W*dpr;cv.height=H*dpr;const ctx=cv.getContext("2d");ctx.setTransform(dpr,0,0,dpr,0,0);
+  render(ctx);
+  const t=S.data.hourly.time[S.valid[S.idx]];
+  $("timeLabel").textContent=fmtTime(t)+(S.meta?`  ${ftText(t)}`:"");
+  [...$("strip").children].forEach((d,k)=>d.classList.toggle("cur",k===S.idx));
+}
+
+function render(ctx){
+  const site=sites[+$("site").value],pr=S.profiles[S.idx],an=analyze(pr);
+  const tStr=S.data.hourly.time[S.valid[S.idx]];
+  const {pTop,pBot,tMin,tMax}=S.axes;
+  const PL=72,PT=92,PW=700,PH=700,PR=PL+PW,PB=PT+PH;
+  const lnT=Math.log(pTop),lnB=Math.log(pBot);
+  const Y=p=>PT+(Math.log(p)-lnT)/(lnB-lnT)*PH;
+  const X=t=>PL+(t-tMin)/(tMax-tMin)*PW;
+  const FONT='"Hiragino Sans","Yu Gothic UI","Meiryo",sans-serif';
+  const txt=(s,x,y,o={})=>{ctx.font=`${o.b?"bold ":""}${o.s||12}px ${FONT}`;ctx.fillStyle=o.c||"#1d2330";ctx.textAlign=o.a||"left";ctx.textBaseline=o.bl||"alphabetic";ctx.fillText(s,x,y);};
+  const poly=(arr,st,lw,dash)=>{if(arr.length<2)return;ctx.beginPath();arr.forEach(([x,y],i)=>i?ctx.lineTo(x,y):ctx.moveTo(x,y));ctx.strokeStyle=st;ctx.lineWidth=lw;ctx.setLineDash(dash||[]);ctx.stroke();ctx.setLineDash([]);};
+
+  ctx.fillStyle="#ffffff";ctx.fillRect(0,0,W,H);
+  // タイトル
+  txt(`MSM エマグラム　${site.name}`,PL,34,{s:20,b:true});
+  txt(`北緯${site.lat.toFixed(3)}°  東経${site.lon.toFixed(3)}°  標高 ${site.elev} m`,PL,58,{s:13,c:"#4a5260"});
+  txt(`対象時刻 ${fmtTime(tStr)}${S.meta?`　初期値 ${fmtInit()}  ${ftText(tStr)}`:""}`,PL,78,{s:13,c:"#4a5260"});
+
+  ctx.save();ctx.beginPath();ctx.rect(PL,PT,PW,PH);ctx.clip();
+  // 地中
+  if(pr.sfc.p<pBot){ctx.fillStyle="#ece7dd";ctx.fillRect(PL,Y(pr.sfc.p),PW,PB-Y(pr.sfc.p));}
+  // 等温線
+  const tStep=(tMax-tMin)>60?10:5;
+  for(let t=Math.ceil(tMin/tStep)*tStep;t<=tMax;t+=tStep)poly([[X(t),PT],[X(t),PB]],t===0?"#7a8494":"#d5d9e0",t===0?1.4:0.8);
+  // 等圧線
+  const isob=(pBot-pTop<500?[1050,1000,950,900,850,800,750,700,650,600,550,500,450,400,350,300,250,200,150,100]:[1050,1000,950,900,850,800,700,600,500,400,300,250,200,150,100]).filter(p=>p>=pTop&&p<=pBot);
+  isob.forEach(p=>poly([[PL,Y(p)],[PR,Y(p)]],"#d5d9e0",0.8));
+  // 乾燥断熱線
+  for(let th=200;th<=520;th+=10){const a=[];for(let p=pBot;p>=pTop;p-=10)a.push([X(th*Math.pow(p/1000,KAPPA)-273.15),Y(p)]);a.push([X(th*Math.pow(pTop/1000,KAPPA)-273.15),Y(pTop)]);poly(a,"#e3a46b",0.8);}
+  // 湿潤断熱線
+  for(let t0=-20;t0<=40;t0+=4){const up=[];let T=t0+273.15,p=1000;
+    for(let q=1000;q>=Math.max(pTop,150);q-=10){T=moistLift(T,p,q);p=q;if(q<=pBot)up.push([X(T-273.15),Y(q)]);}
+    const dn=[];T=t0+273.15;p=1000;for(let q=1000;q<=pBot;q+=10){T=moistLift(T,p,q);p=q;dn.push([X(T-273.15),Y(q)]);}
+    poly(dn.reverse().concat(up),"#5aa469",0.8,[6,4]);}
+  // 等飽和混合比線
+  const ws=[0.4,1,2,3,5,8,12,16,20,28];
+  ws.forEach(w=>{const a=[];for(let p=pBot;p>=Math.max(pTop,400);p-=10){const e=w/1000*p/(EPS+w/1000);a.push([X(tdFromE(e)),Y(p)]);}poly(a,"#9b6bc4",0.8,[2,3]);
+    const pl=pBot-8,e=w/1000*pl/(EPS+w/1000),x=X(tdFromE(e));if(x>PL+8&&x<PR-8)txt(String(w),x,Y(pl)-2,{s:10,c:"#8a5cb5",a:"center"});});
+  // CAPE/CIN 塗り
+  if(an.grid&&an.iL>=0){const g=an.grid;
+    const fill=(k0,k1,c,sign)=>{for(let k=k0;k<k1;k++){const a=g[k],b=g[k+1];if(sign*(a.Tp-a.Te)<=0&&sign*(b.Tp-b.Te)<=0)continue;
+      ctx.beginPath();ctx.moveTo(X(a.Tp),Y(a.p));ctx.lineTo(X(b.Tp),Y(b.p));ctx.lineTo(X(b.Te),Y(b.p));ctx.lineTo(X(a.Te),Y(a.p));ctx.closePath();ctx.fillStyle=c;ctx.fill();}};
+    fill(an.iL,an.iE,"rgba(230,80,60,0.25)",1);fill(0,an.iL,"rgba(60,120,220,0.18)",-1);}
+  // 逆転層の帯
+  pr.inv.forEach(v=>{const y0=Y(v.base.p),y1=Y(v.top.p);ctx.fillStyle=v.surface?"rgba(214,69,61,0.13)":"rgba(240,169,46,0.18)";ctx.fillRect(PL,y1,PW,y0-y1);
+    txt(`${v.type} +${v.dT.toFixed(1)}℃`,PR-6,y1-4,{s:11,b:true,c:v.surface?"#b8322b":"#a86a00",a:"right"});});
+  // ブレイク温度（逆転層上端から地上までの乾燥断熱線）
+  pr.inv.forEach(v=>{if(v.breakT==null||v.top.p<pTop)return;const a=[];
+    for(let p=v.top.p;p<pr.sfc.p;p+=5)a.push([X(v.theta*Math.pow(p/1000,KAPPA)-273.15),Y(p)]);
+    const xb=X(v.breakT),yb=Y(pr.sfc.p);a.push([xb,yb]);poly(a,"#7a3fb0",1.8,[4,3]);
+    ctx.fillStyle="#7a3fb0";ctx.beginPath();ctx.moveTo(xb,yb);ctx.lineTo(xb-5,yb-9);ctx.lineTo(xb+5,yb-9);ctx.closePath();ctx.fill();
+    txt(`ブレイク ${v.breakT.toFixed(1)}℃`,xb+7,yb-10,{s:11,b:true,c:"#6a2fa0"});});
+  // パーセル
+  if(an.grid)poly(an.grid.map(o=>[X(o.Tp),Y(o.p)]),"#222",1.3,[7,4]);
+  // 露点・気温
+  const tdPts=pr.pts.filter(o=>o.Td!=null&&o.p>=pTop*0.98);
+  poly(tdPts.map(o=>[X(o.Td),Y(o.p)]),"#2563c9",2.6);
+  poly(pr.pts.map(o=>[X(o.T),Y(o.p)]),"#d0312d",2.8);
+  pr.pts.forEach(o=>{ctx.fillStyle="#d0312d";ctx.beginPath();ctx.arc(X(o.T),Y(o.p),o.isSfc?4.5:2.6,0,7);ctx.fill();
+    if(o.Td!=null){ctx.fillStyle="#2563c9";ctx.beginPath();ctx.arc(X(o.Td),Y(o.p),o.isSfc?4.5:2.6,0,7);ctx.fill();}});
+  // LCL/LFC/EL
+  const mark=(o,lab)=>{if(!o||o.p<pTop)return;const y=Y(o.p);poly([[PL,y],[PL+40,y]],"#222",1.5);txt(lab,PL+44,y+4,{s:11,b:true});};
+  mark(an.lcl,"LCL");if(an.lfc&&Math.abs(an.lfc.p-an.lcl.p)>4)mark(an.lfc,"LFC");if(an.el&&an.cape>0)mark(an.el,"EL");
+  // 地表線
+  if(pr.sfc.p<pBot+1){const y=Y(pr.sfc.p);poly([[PL,y],[PR,y]],"#8a6d3b",1.6);txt(`地表 ${Math.round(pr.sfc.p)} hPa`,PL+6,y+14,{s:11,c:"#6b5226",b:true});}
+  ctx.restore();
+
+  // 枠・軸ラベル
+  ctx.strokeStyle="#5d6675";ctx.lineWidth=1;ctx.strokeRect(PL,PT,PW,PH);
+  for(let t=Math.ceil(tMin/tStep)*tStep;t<=tMax;t+=tStep)txt(String(t),X(t),PB+16,{s:11,a:"center",c:"#4a5260"});
+  txt("気温 (℃)",PL+PW/2,PB+34,{s:12,a:"center",c:"#4a5260"});
+  isob.forEach(p=>txt(String(p),PL-6,Y(p)+4,{s:11,a:"right",c:"#4a5260"}));
+  ctx.save();ctx.translate(18,PT+PH/2);ctx.rotate(-Math.PI/2);txt("気圧 (hPa)",0,0,{s:12,a:"center",c:"#4a5260"});ctx.restore();
+  // 右側: 高度
+  let lastY=-99;
+  pr.pts.forEach(o=>{if(o.p<pTop)return;const y=Y(o.p);if(Math.abs(y-lastY)<12&&!o.isSfc)return;lastY=y;
+    txt(o.isSfc?`${Math.round(o.z)}m 地上`:`${Math.round(o.z)}m`,PR+6,y+4,{s:10,c:o.isSfc?"#6b5226":"#4a5260",b:o.isSfc});});
+  txt("高度(海抜)",PR+6,PT-6,{s:10,c:"#4a5260"});
+  txt("データ: 気象庁 MSM / Open-Meteo.com (CC BY 4.0)",PL,H-14,{s:11,c:"#7a8494"});
+
+  // 情報パネル
+  const IX=870;let iy=PT+4;const line=(a,b,o={})=>{txt(a,IX,iy,{s:12,c:"#4a5260"});if(b!=null)txt(b,W-18,iy,{s:12,a:"right",b:true,c:o.c});iy+=o.gap||19;};
+  const head=s=>{iy+=6;txt(s,IX,iy,{s:14,b:true});ctx.strokeStyle="#d5d9e0";ctx.beginPath();ctx.moveTo(IX,iy+6);ctx.lineTo(W-18,iy+6);ctx.stroke();iy+=24;};
+  const f1=v=>v==null?"—":v.toFixed(1);
+  const hz=o=>o?`${Math.round(o.p)}hPa / ${o.z==null?"—":Math.round(o.z)+"m"}`:"—";
+  head("地上値");
+  line("気圧",`${pr.sfc.p.toFixed(1)} hPa`);line("気温",`${f1(pr.sfc.T)} ℃`);line("露点",`${f1(pr.sfc.Td)} ℃`);line("作り方",pr.sfc.src);
+  head("指数（地上パーセル）");
+  line("LCL (気圧/地上高)",hz(an.lcl));line("LFC",hz(an.lfc));line("EL",an.cape>0?hz(an.el):"—");
+  line("CAPE",`${Math.round(an.cape||0)} J/kg`);line("CIN",an.cin!=null?`${Math.round(an.cin)} J/kg`:"—");
+  line("SSI",an.ssi!=null?f1(an.ssi):"— (850hPaが地中)",{c:an.ssi!=null&&an.ssi<0?"#b8322b":undefined});
+  line("K指数",an.ki!=null?f1(an.ki):"—");line("0℃高度(海抜)",an.frz||"—");
+  head("逆転層");
+  const invs=pr.inv.filter(v=>v.base.p>=pTop);
+  if(!invs.length)line("なし",null);
+  const bk=breakInfo();
+  invs.slice(0,3).forEach(v=>{
+    txt(`${v.type}  ΔT +${v.dT.toFixed(1)}℃`,IX,iy,{s:12,b:true,c:v.surface?"#b8322b":"#a86a00"});iy+=17;
+    const zb=Math.round(v.base.z-pr.sfc.z),zt=Math.round(v.top.z-pr.sfc.z);
+    txt(`${v.surface?"地上":Math.round(v.base.p)+"hPa"} → ${Math.round(v.top.p)}hPa`,IX+8,iy,{s:11,c:"#4a5260"});iy+=15;
+    txt(`地上高 ${zb}〜${zt} m`,IX+8,iy,{s:11,c:"#4a5260"});iy+=15;
+    if(v.hint){txt(v.hint,IX+8,iy,{s:11,c:"#4a5260"});iy+=15;}
+    if(v.breakT!=null){const r=bk(v.breakT);
+      txt(`ブレイク温度 ${v.breakT.toFixed(1)}℃`,IX+8,iy,{s:12,b:true,c:"#6a2fa0"});iy+=16;
+      txt(r.text,IX+8,iy,{s:11,c:r.ok?"#1f7a3a":"#4a5260",b:r.ok});iy+=15;}
+    iy+=4;});
+  if(invs.length>3){txt(`ほか ${invs.length-3} 層`,IX,iy,{s:11,c:"#4a5260"});iy+=15;}
+  // 凡例
+  iy=Math.max(iy+6,PB-118);head("凡例");
+  const lg=(c,lw,d,s)=>{poly([[IX,iy-4],[IX+28,iy-4]],c,lw,d);txt(s,IX+36,iy,{s:11,c:"#4a5260"});iy+=16;};
+  lg("#d0312d",2.8,null,"気温");lg("#2563c9",2.6,null,"露点");lg("#222",1.3,[7,4],"地上パーセルの持ち上げ");
+  lg("#7a3fb0",1.8,[4,3],"ブレイク温度(逆転層上端の乾燥断熱線)");
+  lg("#e3a46b",1,null,"乾燥断熱線");lg("#5aa469",1,[6,4],"湿潤断熱線");lg("#9b6bc4",1,[2,3],"等飽和混合比線 (g/kg)");
+}
+
+// ===== ブレイク判定（当日のMSM地上2m気温と比較） =====
+// 表示中の時刻から同じ日の終わりまでで、地上気温がブレイク温度に達する最初の時刻と当日最高気温を返す
+function breakInfo(){
+  const Hh=S.data.hourly,i0=S.valid[S.idx],day=Hh.time[i0].slice(0,10);
+  let mx=-Infinity,cnt=0;for(let i=0;i<Hh.time.length;i++){if(Hh.time[i].slice(0,10)!==day||Hh.temperature_2m[i]==null)continue;mx=Math.max(mx,Hh.temperature_2m[i]);cnt++;}
+  return bt=>{
+    for(let i=i0;i<Hh.time.length&&Hh.time[i].slice(0,10)===day;i++){const t=Hh.temperature_2m[i];
+      if(t!=null&&t>=bt)return{ok:true,text:`${+Hh.time[i].slice(11,13)}時頃に解消見込み（当日最高 ${mx.toFixed(1)}℃）`};}
+    if(!isFinite(mx))return{ok:false,text:"当日の地上気温データなし"};
+    return{ok:false,text:`当日中は解消しにくい（最高 ${mx.toFixed(1)}℃${cnt<24?"・途中まで":""}）`};
+  };
+}
+
+// ===== 画像保存 =====
+function savePNG(){
+  const c=document.createElement("canvas"),sc=2;c.width=W*sc;c.height=H*sc;const ctx=c.getContext("2d");ctx.setTransform(sc,0,0,sc,0,0);render(ctx);
+  const site=sites[+$("site").value],t=S.data.hourly.time[S.valid[S.idx]].replace(/[-T:]/g,"").slice(0,10);
+  c.toBlob(b=>{const a=document.createElement("a");a.href=URL.createObjectURL(b);a.download=`emagram_${site.name}_${t}JST.png`;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),2000);},"image/png");
+}
+
+// ===== イベント =====
+function saveSettings(){store.set("emagram_settings",{site:+$("site").value,pTop:$("pTop").value,sfcMode:$("sfcMode").value});}
+const st=store.get("emagram_settings",{});
+renderSiteOptions(st.site);if(st.pTop)$("pTop").value=st.pTop;if(st.sfcMode)$("sfcMode").value=st.sfcMode;
+
+$("site").onchange=()=>{saveSettings();fillForm();loadSite(false);};
+$("pTop").onchange=()=>{saveSettings();if(S.profiles.length){computeAxes();draw();}};
+$("sfcMode").onchange=()=>{saveSettings();if(S.data)afterLoad(false);};
+$("reload").onclick=()=>{S.meta=null;loadSite(true);};
+$("save").onclick=savePNG;
+$("time").oninput=e=>{S.idx=+e.target.value;draw();};
+const step=d=>{if(!S.profiles.length)return;S.idx=Math.min(Math.max(S.idx+d,0),S.profiles.length-1);$("time").value=S.idx;draw();};
+$("prev").onclick=()=>step(-1);$("next").onclick=()=>step(1);
+document.addEventListener("keydown",e=>{if(e.target.tagName==="INPUT"||e.target.tagName==="SELECT")return;if(e.key==="ArrowLeft")step(-1);if(e.key==="ArrowRight")step(1);});
+$("editSite").onclick=()=>{$("siteForm").classList.toggle("open");fillForm();};
+$("fGetElev").onclick=async()=>{
+  const lat=+$("fLat").value,lon=+$("fLon").value;if(!isFinite(lat)||!isFinite(lon)){setStatus("緯度経度を入力してください",true);return;}
+  try{const r=await fetch(`https://api.open-meteo.com/v1/elevation?latitude=${lat}&longitude=${lon}`);const j=await r.json();$("fElev").value=Math.round(j.elevation[0]);setStatus(`標高 ${Math.round(j.elevation[0])} m を取得しました（約90m解像度の地形データ）`);}
+  catch(e){setStatus("標高の取得に失敗しました",true);}
+};
+$("fSave").onclick=()=>{
+  const o={name:$("fName").value.trim(),lat:+$("fLat").value,lon:+$("fLon").value,elev:Math.round(+$("fElev").value)};
+  if(!o.name||!isFinite(o.lat)||!isFinite(o.lon)||!isFinite(o.elev)||$("fLat").value===""||$("fLon").value===""||$("fElev").value===""){setStatus("地点名・緯度・経度・標高をすべて入力してください",true);return;}
+  if(o.lat<22.4||o.lat>47.6||o.lon<120||o.lon>150){setStatus("MSMの範囲外です（北緯22.4〜47.6°、東経120〜150°）",true);return;}
+  let i=sites.findIndex(s=>s.name===o.name);if(i>=0)sites[i]=o;else{sites.push(o);i=sites.length-1;}
+  store.set(SITES_KEY,sites);renderSiteOptions(i);saveSettings();setStatus(`「${o.name}」を保存しました`);loadSite(false);
+};
+$("fDelete").onclick=()=>{
+  if(sites.length<=1){setStatus("最後の1地点は削除できません",true);return;}
+  const i=+$("site").value,n=sites[i].name;if(!confirm(`「${n}」を削除しますか？`))return;
+  sites.splice(i,1);store.set(SITES_KEY,sites);renderSiteOptions(0);saveSettings();fillForm();loadSite(false);
+};
+loadSite(false);
+</script>
+</body>
+</html>
